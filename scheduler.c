@@ -15,21 +15,20 @@
 
 #define IO_PROBABILITY 5
 
-#define MAX_TIME 10000
 
 enum { ALG_FCFS = 1, ALG_NPSJF = 2, ALG_PSJF = 3,
     ALG_NPPri = 4, ALG_PPri = 5, ALG_RR = 6 };
-    
+int scheduleAlg;    
 
 typedef enum { 
   CRIT_SHORTEST, 
   CRIT_PRIORITY
 } Criterion;
 
-int scheduleAlg;
+
 int rr_slice = 0;
 
-int gantt[MAX_TIME + 1];
+int gantt[MAX_PROCESS * 100];
 int totalTime = 0;
 
 //priority 숫자 작을 수록 먼저
@@ -68,21 +67,18 @@ void enqueue_ready(Process *p);
 Process *dequeue_ready(void);
 void enqueue_wait(Process *p);
 void handle_io(int clk);
-Process *check_Shortest(void);
-Process *check_topPriority(void);
+Process *check_best(Criterion crit);
 void remove_from_ready(Process *p);
 Process *schedule(Process *current);
 void handle_cpu(Process **running, int clk, int *completed);
-void start_clock(int clk, Process **running, int *completed);
+void start_clock(int clk, Process *temp, int *completed);
 void print_result(void);
 
 int main(void) {
   setvbuf(stdout, NULL, _IOLBF, 0);
-  int clk = 0;
-  int completed = 0;
-  
-  Process *running = NULL;
-
+  //프로세스 time, priority 관련 정보 랜덤 초기화, handle_cpu에서 IO발생 난수 생성 위함
+  srand((unsigned)time(NULL));
+    
   printf("Select scheduling algorithm:\n"
           "1. FCFS\n"
           "2. Non-Preemptive SJF\n"
@@ -100,13 +96,14 @@ int main(void) {
     exit(EXIT_FAILURE);
   }
 
-  //프로세스 time, priority 관련 정보 랜덤 초기화, handle_cpu에서 IO발생 난수 생성 위함
-  srand((unsigned)time(NULL));
-
   Create_Process();
+
+  Process *running = NULL;
+  int clk = 0;
+  int completed = 0;
   
   //모든 프로세스 처리 전까지 틱 돌리기기
-  while(completed < MAX_PROCESS) {
+  for (int clk = 0; completed < MAX_PROCESS; clk++) {
     //레디큐에 삽입
     for (int i = 0; i < MAX_PROCESS; i++) {
       Process *p = &prcslist[i];
@@ -119,13 +116,12 @@ int main(void) {
     handle_io(clk);
 
     running = schedule(running);
-
-    //running 인자로 받고 handle_cpu에서 NULL로 날아가기 전에 gantt check
-    start_clock(clk, &running, &completed);    
+    Process *temp = running;
 
     handle_cpu(&running, clk, &completed);
 
-    clk++;
+    //handle_cpu NULL반환 대비
+    start_clock(clk, temp, &completed);    
   }
 
   print_result();
@@ -137,8 +133,7 @@ Process Initialize_Process(int pid,
                       int cpuBurst,
                       int ioRqst,
                       int ioBurst,
-                      int priority)
-{
+                      int priority) {
   Process p;
   p.PId = pid;
   p.arrival = arrival;
@@ -149,7 +144,7 @@ Process Initialize_Process(int pid,
   p.remTime = cpuBurst;
   p.ioStartTime = -1;
   p.startTime = -1;
-  p.finTime = 0;
+  p.finTime = -1;
   p.enqueued = 0;
 
   return p;
@@ -165,14 +160,14 @@ void Create_Process(void) {
     int priority = rand() % MAX_PRIORITY;
 
     prcslist[i] = Initialize_Process(pid, arrival, cpuBurst, ioRqst, ioBurst, priority);
-    printf("[Process Generated] P%2d: arrival = %2d, cpuBurst = %2d, I/O Request = %2d, I/OBurst = %2d, priority = %2d\n",
+    printf("[Process Generated]\nP%2d: arrival = %2d, cpuBurst = %2d, I/O Request = %2d, I/OBurst = %2d, priority = %2d\n",
           pid, arrival, cpuBurst, ioRqst, ioBurst, priority);
   }
 }
 
 //push into rear of readyQueue
 void enqueue_ready(Process *p) {
-  if (readyCount < MAX_PROCESS) {
+  if ((!p->enqueued) && (readyCount < MAX_PROCESS)) {
     readyQueue[readyCount++] = p;
     p->enqueued = 1;
   }
@@ -318,16 +313,16 @@ Process *schedule(Process *current) {
 }
  
 //스케쥴링된 process 간트에 넣고, 현재 상태 출력력
-void start_clock(int clk, Process **running, int *completed) {
-  if (*running) 
-    gantt[totalTime++] = (*running)->PId;
+void start_clock(int clk, Process *temp, int *completed) {
+  if (temp) 
+    gantt[totalTime++] = (temp)->PId;
   else
     gantt[totalTime++] = 0;
 
-  if (*running) {
+  if (temp) {
     printf("[STATE] clk=%2d running=P%d ready=%d wait=%d done=%d\n",
         clk,
-       (*running)->PId,
+       temp->PId,
         readyCount, waitCount, *completed);
   }
   else {
@@ -338,36 +333,26 @@ void start_clock(int clk, Process **running, int *completed) {
 }
 
 
-//매 틱 돌아감
+//매 틱 돌아감, IO 종료검사
 void handle_io(int clk) {
   //전역변수 조심!
-  Process *newWait[MAX_PROCESS];
-  int newCount = 0;
+  int cnt = waitCount;
+  waitCount = 0;
   int idx = waitFront;
-
-  //웨잇큐 순회하며 IO 끝났는지 체크하기
-  for (int i = 0; i < waitCount; i++) {
+  for (int i = 0; i < cnt; i++, idx = (idx + 1) % MAX_PROCESS) {
     Process *p = waitQueue[idx];
-    idx = (idx + 1) % MAX_PROCESS;
-    
-    //IO 끝난거 검사, 끝났으면 프로세스는 레디로
-    if ((clk - p->ioStartTime) >= p->ioBurst){
+
+    // 1) If I/O completed, ->readyqueue
+    if (clk - p->ioStartTime >= p->ioBurst) {
       enqueue_ready(p);
       printf("[I/O->Ready] clk=%2d P%d I/O done\n", clk, p->PId);
     }
-    else //검사한 process 큐에서 뽑았다가 다시 넣으면 그 process가 IO 완료 안 됐을 때도 큐 돌리면서 다음 프로세스 더 빠르게 체크 가능 
-      newWait[newCount++] = p;
+    // 2) Unless back to waitqueue
+    else {
+      enqueue_wait(p);   
+    }
   }
-  //초기화하고 임시큐 값으로 재설정
-  waitFront = 0;
-  waitRear = 0;
-  waitCount = 0;
-
-  for (int i = 0; i < newCount; i++) {
-    waitQueue[waitRear] = newWait[i];
-    waitRear = (waitRear + 1) % MAX_PROCESS;
-    waitCount++;
-  }
+  waitFront = idx;
 }
 
 /*매 TICK마다 호출됨, 매 동작 끝나면 running state null해서 다음 작업 용이하게
@@ -384,26 +369,17 @@ void handle_cpu(Process **running, int clk, int *completed) {
   //1) 시작하자마자 remtime감소, IO 발생시키고 감소시키면 조건문에서 return돼서 remtime 안줄어듦
   p->remTime--;
 
-  //2) IO start 여부 검사
-  if (p->remTime == p->ioRqst) {
+  //2) 고정 IO start 여부 검사 (iorqst > 0)
+  if ((p->ioRqst > 0) && (p->cpuBurst - p->remTime == p->ioRqst)) {
     p->ioStartTime = clk;
     enqueue_wait(p);
     *running = NULL;
     printf("[I/O] clk=%2d P%d starts I/O\n", clk, p->PId);
     return;
   }
-  //3) process end 검사
-  if (p->remTime <= 0) {
-    p->finTime = clk + 1;
-    (*completed)++;
-    *running = NULL;
-    printf("[FINISH] clk=%2d P%d finished\n", clk+1, p->PId);
-    return;
-  }
 
-
-  //4. 확률적으로 I/O 발생
-  if (((rand() % 100) < IO_PROBABILITY) && (p->remTime > 0)) {
+  //3) 확률적으로 I/O 발생
+  if (((rand() % 100) < IO_PROBABILITY) && (p->remTime > 0) && (p->ioRqst > 0)) {
     p->ioStartTime =  clk;
     p->enqueued = 0;
     enqueue_wait(p);
@@ -413,15 +389,24 @@ void handle_cpu(Process **running, int clk, int *completed) {
     return;
     //IO발생하면 해당 tick ends -> IO처리 등은 다음 tick에서
   }
+
+  //4) process end 검사
+  if (p->remTime == 0) {
+    p->finTime = clk;
+    (*completed)++;
+    *running = NULL;
+    printf("[FINISH] clk=%2d P%d finished\n", clk, p->PId);
+    return;
+  }
   
-  //5. RR이면 time quantum 지나고 다시 큐 맨 뒤로 enqueue
+  //5) RR이면 time quantum 지나고 다시 큐 맨 뒤로 enqueue
   if (scheduleAlg == ALG_RR) {
     rr_slice ++;
     if (rr_slice >= TIME_QUANTUM) {
       rr_slice = 0;
       enqueue_ready(p);
       *running = NULL;
-      printf("[RR]   clk=%2d P%d time quantum expired\n", clk+1, p->PId);
+      printf("[RR]   clk=%2d P%d time quantum expired\n", clk, p->PId);
     }
   }
 }
@@ -443,7 +428,7 @@ void print_result(void) {
     printf("--------------------------------------------------------\n");
     for (int i = 0; i < MAX_PROCESS; i++) {
         Process *p = &prcslist[i];
-        int turnaround = p->finTime - p->arrival;
+        int turnaround = p->finTime - p->arrival + 1;
         int waiting    = turnaround - p->cpuBurst;
         printf(" P%-2d|   %3d   |  %3d |  %3d  |     %3d    |   %3d\n",
                p->PId, p->arrival, p->startTime, p->finTime, turnaround, waiting);
