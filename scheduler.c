@@ -112,18 +112,15 @@ int main(void) {
         printf("[ARRIVAL] clk=%2d P%d arrived\n", clk, p->PId);
       }
     }
-
+    //IO 끝나는거 있는지 먼저 체크(끝난 프로세스 레디큐로 다시 들어가니까)
     handle_io(clk);
-
+    //스케쥴링
     running = schedule(running);
-    Process *temp = running;
-
+    //현재 돌아가는 프로세스 정보 처리
+    start_clock(clk, running, &completed);   
+    //현재 돌아가는 프로세스 처리
     handle_cpu(&running, clk, &completed);
-
-    //handle_cpu NULL반환 대비
-    start_clock(clk, temp, &completed);    
   }
-
   print_result();
   return 0;
 }
@@ -236,7 +233,6 @@ Process *schedule(Process *current) {
   int preemptive = ((scheduleAlg == ALG_PSJF) || 
                     (scheduleAlg == ALG_PPri));
                     
-
   Process *candidate = NULL;
   //현재 프로세스가 있고 preemptive 알고리즘이 아닐 때: current 프로세스 끝나고 스케쥴링하면 되니까 그대로 return current
   if (current && (!preemptive))
@@ -246,15 +242,20 @@ Process *schedule(Process *current) {
   else {
     switch (scheduleAlg) {
       case ALG_FCFS: 
-        //둘다 running이 NULL일 때 다음 꺼 찾기, RR은 FCFS와 똑같지만 handle_cpu에다가 timequantum 장치 넣어둠
+        if (!current)
+          return dequeue_ready();
+        return current;
+
+
       case ALG_RR:
         if(!current) {
           rr_slice = 0;
           return dequeue_ready();
         }
+        return current;
         
     
-      case ALG_NPSJF: {
+      case ALG_NPSJF: 
         //check_Shortest로 다음 process 추출
         candidate = check_best(CRIT_SHORTEST);
         //레디큐 비었는지 체크
@@ -263,34 +264,33 @@ Process *schedule(Process *current) {
         //추출한 process 제외하고 다시 큐 갱신, 추출한 process는 return
         remove_from_ready(candidate);
         return candidate;
-      }
+      
 
-      case ALG_PSJF: {
+      case ALG_PSJF: 
         candidate = check_best(CRIT_SHORTEST);
         if (!current && candidate) {
           remove_from_ready(candidate);
           return candidate;
         }
-        if (current && candidate && (candidate->remTime < current->remTime)
-          || (!current && candidate)) {
+        if (current && candidate && (candidate->remTime < current->remTime)) {
           remove_from_ready(candidate);
           enqueue_ready(current);
           return candidate;
         }  
         //candidate가 없을 때
         return current;
-      }
+      
 
-      case ALG_NPPri: {
+      case ALG_NPPri: 
         candidate = check_best(CRIT_PRIORITY);
         //레디큐 비었는지 체크
         if (!candidate) 
           return NULL;
         remove_from_ready(candidate);
         return candidate;    
-      }
+      
 
-      case ALG_PPri: {
+      case ALG_PPri: 
         candidate = check_best(CRIT_PRIORITY);
         if (!current && candidate) {
           remove_from_ready(candidate);
@@ -304,7 +304,7 @@ Process *schedule(Process *current) {
         }
         //candidate가 없을 때
         return current;
-      }
+      
 
       default:
         return NULL;
@@ -312,23 +312,20 @@ Process *schedule(Process *current) {
   }  
 }
  
-//스케쥴링된 process 간트에 넣고, 현재 상태 출력력
-void start_clock(int clk, Process *temp, int *completed) {
-  if (temp) 
-    gantt[totalTime++] = (temp)->PId;
+//매 틱 돌아감, 스케쥴링된 process 간트에 넣고, 현재 상태 출력력
+void start_clock(int clk, Process *running, int *completed) {
+  if (running) 
+    gantt[totalTime++] = (running)->PId;
   else
     gantt[totalTime++] = 0;
 
-  if (temp) {
+  if (running) {
     printf("[STATE] clk=%2d running=P%d ready=%d wait=%d done=%d\n",
-        clk,
-       temp->PId,
-        readyCount, waitCount, *completed);
+        clk,running->PId,readyCount, waitCount, *completed);
   }
   else {
     printf("[STATE] clk=%2d running=- ready=%d wait=%d done=%d\n",
-        clk,
-        readyCount, waitCount, *completed);
+        clk, readyCount, waitCount, *completed);
   }
 }
 
@@ -370,7 +367,7 @@ void handle_cpu(Process **running, int clk, int *completed) {
   //1) 시작하자마자 remtime감소, IO 발생시키고 감소시키면 조건문에서 return돼서 remtime 안줄어듦
   p->remTime--;
 
-  //2) 고정 IO start 여부 검사 (iorqst > 0)
+  //2) 고정 IO start 여부 검사
   if ((p->ioRqst > 0) && (p->cpuBurst - p->remTime == p->ioRqst)) {
     p->ioStartTime = clk;
     enqueue_wait(p);
@@ -379,7 +376,7 @@ void handle_cpu(Process **running, int clk, int *completed) {
     return;
   }
 
-  //3) 확률적으로 I/O 발생
+  //3) 확률적으로 I/O 발생, rqst검사는 애초에 그 프로세스가 IO 가능한지 확인 위함
   if (((rand() % 100) < IO_PROBABILITY) && (p->remTime > 0) && (p->ioRqst > 0)) {
     p->ioStartTime =  clk;
     p->enqueued = 0;
