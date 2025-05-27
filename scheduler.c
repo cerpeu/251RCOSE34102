@@ -356,7 +356,8 @@ void handle_io(int clk) {
 }
 
 /*매 TICK마다 호출됨, 매 동작 끝나면 running state null해서 다음 작업 용이하게
-  매 TICK마다 IO 실행, Process end, IO 발생, RR 체크*/
+  매 TICK마다 IO 실행, Process end, IO 발생, RR 체크
+  Next tick scheduling(상태변화 있어도 다음 tick에서 반영)*/
 void handle_cpu(Process **running, int clk, int *completed) {
   Process *p = *running;
   if (!p)
@@ -396,6 +397,7 @@ void handle_cpu(Process **running, int clk, int *completed) {
     (*completed)++;
     *running = NULL;
     printf("[FINISH] clk=%2d P%d finished\n", clk, p->PId);
+    
     return;
   }
   
