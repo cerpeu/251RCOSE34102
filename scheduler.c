@@ -3,7 +3,7 @@
 #include <time.h>
 #include <limits.h>
 
-#define MAX_PROCESS 5
+#define MAX_PROCESS 3
 
 #define MAX_ARRIVAL 15
 #define MAX_CPU_BURST 8
@@ -13,7 +13,7 @@
 #define MAX_PRIORITY 5
 #define TIME_QUANTUM 2
 
-#define IO_PROBABILITY 5
+#define IO_PROBABILITY 10
 
 
 enum { ALG_FCFS = 1, ALG_NPSJF = 2, ALG_PSJF = 3,
@@ -44,6 +44,7 @@ typedef struct {
   int startTime;
   int finTime;
   int enqueued;
+  int ioWaitTime;
   } Process;
 
 
@@ -143,6 +144,7 @@ Process Initialize_Process(int pid,
   p.startTime = -1;
   p.finTime = -1;
   p.enqueued = 0;
+  p.ioWaitTime = 0;
 
   return p;
 }
@@ -341,6 +343,7 @@ void handle_io(int clk) {
 
     // 1) If I/O completed, ->readyqueue
     if (clk - p->ioStartTime >= p->ioBurst) {
+      p->ioWaitTime += p->ioBurst;
       enqueue_ready(p);
       printf("[I/O->Ready] clk=%2d P%d I/O done\n", clk, p->PId);
     }
@@ -369,7 +372,7 @@ void handle_cpu(Process **running, int clk, int *completed) {
 
   //2) 고정 IO start 여부 검사
   if ((p->ioRqst > 0) && (p->cpuBurst - p->remTime == p->ioRqst)) {
-    p->ioStartTime = clk;
+    p->ioStartTime = clk + 1;
     enqueue_wait(p);
     *running = NULL;
     printf("[I/O] clk=%2d P%d starts I/O\n", clk, p->PId);
@@ -378,8 +381,7 @@ void handle_cpu(Process **running, int clk, int *completed) {
 
   //3) 확률적으로 I/O 발생, rqst검사는 애초에 그 프로세스가 IO 가능한지 확인 위함
   if (((rand() % 100) < IO_PROBABILITY) && (p->remTime > 0) && (p->ioRqst > 0)) {
-    p->ioStartTime =  clk;
-    p->enqueued = 0;
+    p->ioStartTime =  clk + 1;
     enqueue_wait(p);
     printf("[I/O] P%d: at %d tick random I/O happened (I/O burst = %d)\n", p->PId, clk, p->ioBurst);
     fflush(stdout);
@@ -427,8 +429,11 @@ void print_result(void) {
     printf("--------------------------------------------------------\n");
     for (int i = 0; i < MAX_PROCESS; i++) {
         Process *p = &prcslist[i];
-        int turnaround = p->finTime - p->arrival + 1;
-        int waiting    = turnaround - p->cpuBurst;
+        //turnaround +1 연산 수정, waiting time 계산 수정
+        int turnaround = p->finTime - p->arrival;
+        int waiting = turnaround - p->cpuBurst - p->ioWaitTime;
+        if (waiting < 0)
+          waiting = 0;
         printf(" P%-2d|   %3d   |  %3d |  %3d  |     %3d    |   %3d\n",
                p->PId, p->arrival, p->startTime, p->finTime, turnaround, waiting);
     }
